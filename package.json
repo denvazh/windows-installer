@@ -8,9 +8,16 @@
     "type": "git",
     "url": "https://github.com/electronjs/windows-installer"
   },
+  "files": [
+    "src/**",
+    "template.nuspectemplate",
+    "resources/**",
+    "vendor/**"
+  ],
   "scripts": {
     "compile": "babel -d lib/ src/",
     "prepublish": "npm run compile",
+    "postinstall": "postinstall-build lib \"npm run compile\"",
     "lint": "eslint src & eslint spec",
     "test": "npm run lint && ava",
     "tdd": "ava --watch"
@@ -21,6 +28,8 @@
     "debug": "^2.2.0",
     "fs-extra": "^2.1.2",
     "lodash.template": "^4.2.2",
+    "postinstall-build": "^5.0.2",
+    "signcode": "^1.0.0",
     "temp": "^0.8.3"
   },
   "devDependencies": {

@@ -3,6 +3,7 @@ import spawn from './spawn-promise';
 import asar from 'asar';
 import path from 'path';
 import * as fsUtils from './fs-utils';
+import * as signcodeUtils from './signcode-utils';
 
 const log = require('debug')('electron-windows-installer:main');
 
@@ -14,6 +15,17 @@ export function convertVersion(version) {
     return [mainVersion, parts.join('-').replace(/\./g, '')].join('-');
   } else {
     return mainVersion;
+  }
+}
+
+export async function codeSignExecutables(dir, options) {
+  const filesToSign = fsUtils.getFilesSync(dir).filter((file) => file.endsWith('.exe'));
+  if (filesToSign.length === 0) return;
+
+  log('Found the following files to sign: ', filesToSign);
+  for (const filePath of filesToSign) {
+    await signcodeUtils.codeSign(Object.assign({ path: filePath }, options));
+    await signcodeUtils.verifySign(filePath);
   }
 }
 
@@ -59,7 +71,7 @@ export async function createWindowsInstaller(options) {
   const defaultLoadingGif = path.join(__dirname, '..', 'resources', 'install-spinner.gif');
   loadingGif = loadingGif ? path.resolve(loadingGif) : defaultLoadingGif;
 
-  let {certificateFile, certificatePassword, remoteReleases, signWithParams, remoteToken} = options;
+  let { certificateFile, certificatePassword, remoteReleases, signWithParams, remoteToken } = options;
 
   const metadata = {
     description: '',
@@ -124,6 +136,30 @@ export async function createWindowsInstaller(options) {
     cmd = monoExe;
   }
 
+  // Codesign all executables before creating install package
+  let useSigncode = false;
+
+  const codeSignOptions = {
+    overwrite: true
+  };
+
+  if (process.platform === 'darwin') {
+    const { signOptions } = options;
+    if (certificateFile && certificatePassword) {
+      useSigncode = true;
+      Object.assign(codeSignOptions, { cert: certificateFile, password: certificatePassword });
+      if (signOptions) { // append additional options and remove those that can conflict with ones above
+        ['key', 'passwordPath', 'path'].forEach((i) => signOptions[i] = undefined);
+        Object.assign(codeSignOptions, JSON.parse(JSON.stringify(signOptions)));
+      }
+    }
+  }
+
+  if (process.platform !== 'win32' && useSigncode) {
+    log('Trying to codesign found executables');
+    await codeSignExecutables(appDirectory, codeSignOptions);
+  }
+
   // Call NuGet to create our package
   log(await spawn(cmd, args));
   const nupkgPath = path.join(nugetOutput, `${metadata.name}.${metadata.version}.nupkg`);
@@ -156,12 +192,15 @@ export async function createWindowsInstaller(options) {
     cmd = monoExe;
   }
 
-  if (signWithParams) {
-    args.push('--signWithParams');
-    args.push(signWithParams);
-  } else if (certificateFile && certificatePassword) {
-    args.push('--signWithParams');
-    args.push(`/a /f "${path.resolve(certificateFile)}" /p "${certificatePassword}"`);
+  // apply --signWithParams and rely on Update-Mono.exe only for win32 builds
+  if (process.platform === 'win32') {
+    if (signWithParams) {
+      args.push('--signWithParams');
+      args.push(signWithParams);
+    } else if (certificateFile && certificatePassword) {
+      args.push('--signWithParams');
+      args.push(`/a /f "${path.resolve(certificateFile)}" /p "${certificatePassword}"`);
+    }
   }
 
   if (options.setupIcon) {
@@ -178,6 +217,11 @@ export async function createWindowsInstaller(options) {
   }
 
   log(await spawn(cmd, args));
+
+  // Codesign all executables in output directory, i.e. all installers
+  if (process.platform !== 'win32' && useSigncode) {
+    await codeSignExecutables(outputDirectory, codeSignOptions);
+  }
 
   if (options.fixUpPaths !== false) {
     log('Fixing up paths');
